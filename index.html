@@ -1073,7 +1073,7 @@ body.hc-dock .hc-rules-grid{grid-template-columns:repeat(2,1fr)}
       <div class="legend-row"><span class="legend-sw" style="background:#C2410C"></span>关系</div>
 
       <div class="side-foot">
-        <div id="buildTag" style="color:#C3C9D4;font-size:10px;margin-top:6px;letter-spacing:.2px">版本号：<a href="javascript:;" id="kbGuideOpen">V1.0.5（测试版）</a><br>创建时间： 2026-11-09 17:14<br>创建人：Tina</div>
+        <div id="buildTag" style="color:#C3C9D4;font-size:10px;margin-top:6px;letter-spacing:.2px">版本号：<a href="javascript:;" id="kbGuideOpen">V1.0.5</a><br>创建时间： 2026-11-09 18:03<br>创建人：Tina</div>
       </div>
     </nav>
 
@@ -1619,6 +1619,231 @@ ${l.stack}`)}else c=o?.stack??"";let f=this.url.toString().length;return o?.name
     oauthRelayBaseUrl: "https://www.workbuddy.cn/v2/as/genie-baas/oauth",
     publishableKey: "wbpk_60c7s3MyOu4F4JnPgVwtOU_2VLomH40ugcBsT5KucqRM7ROryLF5ccF"
   };
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════════════
+   GitHub Pages 公开版 · 本机模式
+   ──────────────────────────────────────────────────────────────
+   公开域名 policytellyou.github.io 调不到工作台专属云端
+   （跨域预检 OPTIONS 501 + sharecode 403），所有 fetch 都会
+   TypeError: Failed to fetch，于是后台统计读不出、入口清单存不下。
+
+   这里在应用主脚本之前把 WorkBuddyCloud.createWorkBuddyCloud
+   换成本机替身：接口形状与云端 SDK 一致，数据落各人浏览器
+   localStorage。应用逻辑一行不用改，「云端未连接」的分支也就
+   不会再出现。正式应用（*.app.workbuddy.host）与本地 file://
+   测试完全不启用，仍走原来的云端。
+
+   只接管四张表：kb_format_config / kb_usage_stat /
+   kb_usage_visitor / kb_usage_log；不提供 llm，AI 功能按
+   应用已有的「大模型未连接」降级到规则版。
+   ══════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+
+  function on() {
+    try {
+      if (window.__KB_FORCE_LOCAL__) return true;
+      if (/(^|\.)policytellyou\.github\.io$/i.test(location.hostname || '')) return true;
+      if (/[?&]kbLocal=1(?:&|$)/.test(location.search || '')) return true;
+    } catch (e) {}
+    return false;
+  }
+  if (!on() || typeof WorkBuddyCloud === 'undefined') return;
+  window.__KB_LOCAL__ = true;
+
+  var P = 'kbLocal.v1.';
+  var mem = {};                       // localStorage 不可用时退到内存
+  function read(k, def) {
+    try {
+      var raw = localStorage.getItem(P + k);
+      if (raw == null) raw = mem[k];
+      var v = raw == null ? null : JSON.parse(raw);
+      return v == null ? def : v;
+    } catch (e) { return def; }
+  }
+  function write(k, v) {
+    var raw = JSON.stringify(v);
+    mem[k] = raw;
+    try { localStorage.setItem(P + k, raw); } catch (e) {}
+  }
+  function cfgRows() { return read('cfg', []); }
+  function logs() { return read('logs', []); }
+
+  var LOG_CAP = 3000;                 // 只留最近 3000 条，避免撑爆 localStorage
+  function isTemp(id) {
+    return !id || id === 'no-store' || String(id).indexOf('tmp-') === 0;
+  }
+  function ts(r) { return String(r && r.created_at || ''); }
+
+  /* ── 聚合视图：与云端 kb_usage_stat 同字段 ── */
+  function statRow(list) {
+    var byA = {}, uv = {}, tmp = {}, sess = {}, first = '', last = '', legacy = 0, mrgG = 0;
+    list.forEach(function (r) {
+      var a = r.action || '';
+      byA[a] = (byA[a] || 0) + 1;
+      if (r.client_id) {
+        if (isTemp(r.client_id)) tmp[r.client_id] = 1; else uv[r.client_id] = 1;
+      } else legacy++;
+      if (r.session_id) sess[r.session_id] = 1;
+      if (a === 'merge') mrgG += Number(r.rows) || 0;
+      var t = ts(r);
+      if (t && (!first || t < first)) first = t;
+      if (t && (!last || t > last)) last = t;
+    });
+    return {
+      visitors: Object.keys(uv).length, temp_visitors: Object.keys(tmp).length,
+      sessions: Object.keys(sess).length, opens: byA.open || 0,
+      imports: byA.import || 0, exports: byA.export || 0,
+      merges: byA.merge || 0, merge_groups: mrgG, downloads: byA.download || 0,
+      total: list.length, legacy: legacy, first_at: first || null, last_at: last || null
+    };
+  }
+
+  /* ── 聚合视图：与云端 kb_usage_visitor 同字段 ── */
+  function visitorRows(list) {
+    var m = {};
+    list.forEach(function (r) {
+      var id = r.client_id || '';
+      if (!id) return;
+      var v = m[id] || (m[id] = {
+        client_id: id, ua: r.ua || null, ops: 0, first_at: null, last_at: null,
+        opens: 0, imports: 0, exports: 0, merges: 0, downloads: 0
+      });
+      v.ops++;
+      var a = r.action || '';
+      if (a === 'open') v.opens++;
+      else if (a === 'import') v.imports++;
+      else if (a === 'export') v.exports++;
+      else if (a === 'merge') v.merges++;
+      else if (a === 'download') v.downloads++;
+      if (r.ua) v.ua = r.ua;
+      var t = ts(r);
+      if (t && (!v.first_at || t < v.first_at)) v.first_at = t;
+      if (t && (!v.last_at || t > v.last_at)) v.last_at = t;
+    });
+    return Object.keys(m).map(function (k) { return m[k]; });
+  }
+
+  /* ── 链式查询：select / eq / order / limit / maybeSingle / insert / upsert ── */
+  function Q(t) {
+    this.t = t; this.op = 'select'; this.cols = '*';
+    this.f = []; this.ord = null; this.lim = null;
+    this.single = false; this.payload = null;
+  }
+  Q.prototype.select = function (c) { this.cols = c || '*'; return this; };
+  Q.prototype.eq = function (k, v) { this.f.push([k, v]); return this; };
+  Q.prototype.order = function (k, o) {
+    this.ord = [k, !(o && o.ascending === false)]; return this;
+  };
+  Q.prototype.limit = function (n) { this.lim = Number(n) || 0; return this; };
+  Q.prototype.maybeSingle = function () { this.single = true; return this; };
+  Q.prototype.insert = function (row) { this.op = 'insert'; this.payload = row; return this; };
+  Q.prototype.upsert = function (row) { this.op = 'upsert'; this.payload = row; return this; };
+  Q.prototype.then = function (res, rej) {
+    var out;
+    try { out = { data: this._exec(), error: null }; }
+    catch (e) { out = { data: null, error: { message: String(e && e.message || e) } }; }
+    return Promise.resolve(out).then(res, rej);
+  };
+  Q.prototype.catch = function (fn) { return Promise.resolve(this).catch(fn); };
+  Q.prototype._project = function (rows) {
+    var c = String(this.cols || '*').trim();
+    if (c === '*' || !rows.length) return rows;
+    var keys = c.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    return rows.map(function (r) {
+      var o = {};
+      keys.forEach(function (k) { if (r[k] !== undefined) o[k] = r[k]; });
+      return o;
+    });
+  };
+  Q.prototype._finish = function (rows) {
+    var self = this;
+    var out = rows.slice();
+    if (this.ord) {
+      var k = this.ord[0], asc = this.ord[1];
+      out.sort(function (a, b) {
+        var x = String(a[k] == null ? '' : a[k]), y = String(b[k] == null ? '' : b[k]);
+        return asc ? x.localeCompare(y) : y.localeCompare(x);
+      });
+    }
+    if (this.lim > 0) out = out.slice(0, this.lim);
+    out = this._project(out);
+    return this.single ? (out[0] || null) : out;
+  };
+  Q.prototype._exec = function () {
+    var self = this;
+    var cfg = null, list = null, rows = null;
+
+    if (this.t === 'kb_format_config') {
+      cfg = cfgRows();
+      if (this.op === 'upsert') {
+        var row = this.payload || {};
+        var at = -1;
+        for (var i = 0; i < cfg.length; i++) if (cfg[i].slot === row.slot) { at = i; break; }
+        if (at >= 0) cfg[at] = { slot: row.slot, data: row.data };
+        else cfg.push({ slot: row.slot, data: row.data });
+        write('cfg', cfg);
+        return [row];
+      }
+      rows = cfg.filter(function (r) {
+        return self.f.every(function (p) { return r[p[0]] === p[1]; });
+      });
+      return this._finish(rows);
+    }
+
+    if (this.t === 'kb_usage_log') {
+      list = logs();
+      if (this.op === 'insert') {
+        var ev = {};
+        for (var k in (this.payload || {})) if (Object.prototype.hasOwnProperty.call(this.payload, k)) ev[k] = this.payload[k];
+        if (!ev.created_at) ev.created_at = new Date().toISOString();
+        list.push(ev);
+        if (list.length > LOG_CAP) list = list.slice(list.length - LOG_CAP);
+        write('logs', list);
+        return [ev];
+      }
+      /* 明细默认按时间倒序，与云端 order('created_at',{ascending:false}) 一致 */
+      rows = list.filter(function (r) {
+        return self.f.every(function (p) { return r[p[0]] === p[1]; });
+      });
+      if (!this.ord) {
+        rows.sort(function (a, b) { return ts(b).localeCompare(ts(a)); });
+      }
+      return this._finish(rows);
+    }
+
+    list = logs();
+    if (this.t === 'kb_usage_stat') return this._finish([statRow(list)]);
+    if (this.t === 'kb_usage_visitor') {
+      rows = visitorRows(list);
+      if (!this.ord) rows.sort(function (a, b) {
+        return String(b.last_at || '').localeCompare(String(a.last_at || ''));
+      });
+      return this._finish(rows);
+    }
+    return this._finish([]);
+  };
+
+  var local = {
+    database: { from: function (t) { return new Q(t); } }
+    /* 故意不提供 llm：应用会走「大模型未连接」的规则版降级 */
+  };
+
+  /* SDK 的输出对象是只带 getter 的冻结对象，改不了成员；直接换掉整个全局
+     var WorkBuddyCloud（顶层 var == window 属性，可写）。应用只用它的
+     createWorkBuddyCloud，其它导出在公开版里没有用到。 */
+  window.WorkBuddyCloud = { createWorkBuddyCloud: function () { return local; } };
+
+  /* 回归自检钩子：只在测试里用，不参与界面 */
+  window.__KB_LOCAL_DB__ = {
+    logs: function () { return logs().slice(); },
+    cfg: function () { return cfgRows().slice(); },
+    reset: function () { mem = {}; try { localStorage.removeItem(P + 'cfg'); localStorage.removeItem(P + 'logs'); } catch (e) {} }
+  };
+})();
+
 </script>
 
 <script>
@@ -2302,6 +2527,7 @@ function showAdminPanel() {
     /* ① 数据统计 */
     '<div class="adm-pane" id="admPane-stat">' +
       '<div class="hint">导入、生成、合并、导出这些动作都会记一笔。下面按「总量 / 独立访客 / 访客明细 / 操作明细」分开看，明细固定十行高度，超出在框内滚动。</div>' +
+      (window.__KB_LOCAL__ ? '<div class="hint" style="color:#C2410C">公开版：这些记录只保存在当前浏览器，不与其他访客汇总；清理浏览器数据会一并清掉。</div>' : '') +
       '<div id="adminLogs" style="margin-top:10px"><div class="hint">加载中…</div></div>' +
     '</div>' +
 
@@ -2350,7 +2576,8 @@ function showAdminPanel() {
     '<div class="adm-pane" id="admPane-links">' +
       '<div class="hint">这里管「系统入口」页：先建分类，再把网址挂到分类下面。' +
       '可以新增、改名、调顺序、删除分类；删分类时它下面的入口会自动移到第一个分类，不会丢。' +
-      '保存后所有人打开工作台都能看到，发布新版不会覆盖。</div>' +
+      (window.__KB_LOCAL__ ? '保存后当前浏览器打开工作台就能看到。</div>'
+                           : '保存后所有人打开工作台都能看到，发布新版不会覆盖。</div>') +
       '<div id="admLinksWrap" style="margin-top:10px"></div>' +
     '</div>';
 
@@ -4277,8 +4504,11 @@ function renderLinksCfgPanel() {
     var w2 = $('admLinksWrap'); if (!w2) return;
     LK_CFG = { cats: clone(LK_CATS), items: clone(LK_ITEMS) };
     var tip = !CLOUD ? '云端未连接，只能查看默认清单，保存不会生效。'
-      : (fromCloud ? '下面是云端当前生效的清单，改完点「保存并应用」。'
-                   : '云端还没有存过清单，先显示默认这一条；点「保存并应用」后正式生效。');
+      : window.__KB_LOCAL__
+        ? (fromCloud ? '下面是本机当前生效的清单，改完点「保存并应用」。'
+                     : '本机还没有存过清单，先显示默认这一条；点「保存并应用」后正式生效。')
+        : (fromCloud ? '下面是云端当前生效的清单，改完点「保存并应用」。'
+                     : '云端还没有存过清单，先显示默认这一条；点「保存并应用」后正式生效。');
     w2.innerHTML =
       '<div class="hint" style="margin-bottom:10px">' + tip + '</div>' +
 
