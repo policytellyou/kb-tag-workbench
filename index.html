@@ -1073,7 +1073,7 @@ body.hc-dock .hc-rules-grid{grid-template-columns:repeat(2,1fr)}
       <div class="legend-row"><span class="legend-sw" style="background:#C2410C"></span>关系</div>
 
       <div class="side-foot">
-        <div id="buildTag" style="color:#C3C9D4;font-size:10px;margin-top:6px;letter-spacing:.2px">版本号：<a href="javascript:;" id="kbGuideOpen">V1.0.5</a><br>创建时间： 2026-11-09 18:03<br>创建人：Tina</div>
+        <div id="buildTag" style="color:#C3C9D4;font-size:10px;margin-top:6px;letter-spacing:.2px">版本号：<a href="javascript:;" id="kbGuideOpen">V1.0.5</a><br>创建时间： 2026-11-09 18:15<br>创建人：Tina</div>
       </div>
     </nav>
 
@@ -1835,6 +1835,25 @@ ${l.stack}`)}else c=o?.stack??"";let f=this.url.toString().length;return o?.name
      var WorkBuddyCloud（顶层 var == window 属性，可写）。应用只用它的
      createWorkBuddyCloud，其它导出在公开版里没有用到。 */
   window.WorkBuddyCloud = { createWorkBuddyCloud: function () { return local; } };
+
+  /* 旧版在公开域名上写云端失败，会留下「失败 N 条」的记账计数和 inflight 卡住的
+     补发队列。本机模式启用时清掉这些历史脏状态：计数归零、待补发日志复位后能
+     正常落到本机，避免后台看到一串与本次无关的旧失败。只动应用自己的诊断键。 */
+  try {
+    var st = JSON.parse(localStorage.getItem('kbLogStat') || '{}') || {};
+    if (Number(st.fail) > 0) {
+      st.fail = 0;
+      localStorage.setItem('kbLogStat', JSON.stringify(st));
+    }
+    var q = JSON.parse(localStorage.getItem('kbLogQueue') || '[]');
+    if (Object.prototype.toString.call(q) === '[object Array]' && q.length) {
+      var dirty = false;
+      q.forEach(function (it) {
+        if (it && (it.inflight || it.tries)) { it.inflight = 0; it.tries = 0; dirty = true; }
+      });
+      if (dirty) localStorage.setItem('kbLogQueue', JSON.stringify(q));
+    }
+  } catch (e) {}
 
   /* 回归自检钩子：只在测试里用，不参与界面 */
   window.__KB_LOCAL_DB__ = {
